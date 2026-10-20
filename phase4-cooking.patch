@@ -1,0 +1,1014 @@
+diff --git a/ai/PHASE_4_COOKING.md b/ai/PHASE_4_COOKING.md
+new file mode 100644
+index 0000000..57cb82d
+--- /dev/null
++++ b/ai/PHASE_4_COOKING.md
+@@ -0,0 +1,38 @@
++# Phase 4 — Cooking & Serving (catatan implementasi)
++
++Status: **Ready for Review** (belum diuji di Roblox Studio). Mencakup 4.1 (config stasiun/resep), 4.2 (lifecycle memasak), 4.3 (serve handoff). 4.4 (kualitas & hukuman kesalahan) **belum dikerjakan** — saat ini kesalahan hanya berarti ulang dari awal.
++
++## Alur pemain
++
++1. **FoodBox** (prompt) → `ServerStorage.FoodBox` di-clone ke `TrayPlacement`.
++2. **Chicken** (prompt) → `ServerStorage.Models.Chicken` di-clone ke model `Geprek`.
++3. **Geprek** (prompt) → ayam digeprek (skala `SmashScale`, atribut `Smashed`).
++4. **Sambal** (`Stasion.Sambal.Hijau/Korek/Matah/Original`) → ayam dimasukkan ke FoodBox di `TrayPlacement`.
++5. Ulangi 1–4 sampai jumlah porsi di nampan = jumlah porsi order (maks 3).
++6. **Tray** (prompt) → server cocokkan sambal nampan dengan order.
++   - Cocok: `Cooking → Ready → Served`.
++   - Tidak cocok: nampan dibersihkan, pemain ulang dari awal. Order tetap `Cooking`, timer 2 menit jalan terus.
++
++## Kontrak map (nama di `CookingConfig`)
++
++| Objek | Lokasi |
++|---|---|
++| FoodBox part + ProximityPrompt | Workspace |
++| Chicken part + ProximityPrompt | Workspace |
++| Geprek model + ProximityPrompt | Workspace |
++| Hijau, Korek, Matah, Original + ProximityPrompt | Workspace.Stasion.Sambal |
++| TrayPlacement (BasePart) | Workspace |
++| Tray (ProximityPrompt, atau part berisi prompt) | Workspace |
++| FoodBox (Model) | ServerStorage |
++| Chicken (Model) | ServerStorage.Models |
++
++Ganti nama di map = ubah `CookingConfig.luau` saja. Jika ada objek yang tidak ditemukan dalam `ResolveTimeoutSeconds`, Output menampilkan `[CookingService] CookingService TIDAK aktif. Objek belum ditemukan: ...`.
++
++## Keputusan / ASSUMPTION
++
++- Sambal order diganti ke 4 id stasiun: `hijau`, `korek`, `matah`, `original` (sebelumnya tidak_pedas/sedang/pedas/extra_pedas). `extraPrice` dan `weight` adalah angka sementara (TUNABLE CONFIG).
++- `Ready` hanya sesaat: dicapai dan langsung `Served` di satu aksi Tray. Prompt "Antar" di layar order praktis tidak muncul.
++- Order di-bind ke sesi saat FoodBox pertama ditekan: order `Accepted` tertua. Asumsi satu juru masak (MVP single-player).
++- Hint tampil lewat BillboardGui di `TrayPlacement` (tanpa client script). UI client resmi menyusul di Phase 11.3.
++- `Debug.DevAutoCook = false`: dev harness tidak lagi memalsukan Cooking/Ready.
++- Belum ada uang/reputasi; Phase 5 mendengarkan `OrderService.OrderChanged` (`Served`).
+diff --git a/src/ReplicatedStorage/Shared/Config/CookingConfig.luau b/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
+new file mode 100644
+index 0000000..4bb9380
+--- /dev/null
++++ b/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
+@@ -0,0 +1,42 @@
++--!strict
++--[[
++	CookingConfig — Phase 4 tunables + workspace/ServerStorage names.
++	Names below mirror the map the project owner already built. If the map is renamed, change it HERE only.
++	Values marked ASSUMPTION / TUNABLE CONFIG are not fixed by the GDD and need playtesting.
++]]
++
++local CookingTypes = require(script.Parent.Parent.Types.CookingTypes)
++
++local config: CookingTypes.CookingConfig = {
++	FoodBoxName = "FoodBox",
++	ChickenName = "Chicken",
++	GeprekName = "Geprek",
++	TrayPlacementName = "TrayPlacement",
++	TrayPromptName = "Tray",
++	SambalFolderPath = { "Stasion", "Sambal" },
++	SambalStations = {
++		Hijau = "hijau",
++		Korek = "korek",
++		Matah = "matah",
++		Original = "original",
++	},
++
++	FoodBoxTemplatePath = { "FoodBox" },
++	ChickenTemplatePath = { "Models", "Chicken" },
++
++	-- ASSUMPTION / TUNABLE CONFIG (adjust to the real size of your models)
++	TrayPortionSpacing = Vector3.new(2.5, 0, 0),
++	TrayPlacementOffset = Vector3.new(0, 0.5, 0),
++	ChickenOnBoxOffset = Vector3.new(0, 0.6, 0),
++	GeprekChickenOffset = Vector3.new(0, 1, 0),
++	SmashScale = 0.85,
++
++	StepCooldownSeconds = 0.3,
++	DistanceSlack = 6,
++	ResolveTimeoutSeconds = 10,
++	ServeCleanupDelaySeconds = 1.5,
++	HintSeconds = 3,
++	ShowHint = true,
++}
++
++return config
+diff --git a/src/ReplicatedStorage/Shared/Config/OrderConfig.luau b/src/ReplicatedStorage/Shared/Config/OrderConfig.luau
+index 7c92667..c54176f 100644
+--- a/src/ReplicatedStorage/Shared/Config/OrderConfig.luau
++++ b/src/ReplicatedStorage/Shared/Config/OrderConfig.luau
+@@ -30,13 +30,15 @@ local config: OrderTypes.OrderConfig = {
+ 	},
+ 
+ 	Sambal = {
+-		tidak_pedas = { displayName = "Tidak Pedas", extraPrice = 0, weight = 2 },
+-		sedang = { displayName = "Sedang", extraPrice = 0, weight = 4 },
+-		pedas = { displayName = "Pedas", extraPrice = 1000, weight = 3 },
+-		extra_pedas = { displayName = "Extra Pedas", extraPrice = 2000, weight = 1 },
++		-- Ids match the 4 sambal stations in Workspace.Stasion.Sambal (see CookingConfig.SambalStations).
++		-- extraPrice / weight are ASSUMPTIONS. TUNABLE CONFIG
++		hijau = { displayName = "Sambal Hijau", extraPrice = 0, weight = 3 },
++		korek = { displayName = "Sambal Korek", extraPrice = 1000, weight = 3 },
++		matah = { displayName = "Sambal Matah", extraPrice = 1000, weight = 2 },
++		original = { displayName = "Sambal Original", extraPrice = 0, weight = 4 },
+ 	},
+ 	-- Deterministic iteration order (also display order).
+-	SambalOrder = { "tidak_pedas", "sedang", "pedas", "extra_pedas" },
++	SambalOrder = { "original", "hijau", "korek", "matah" },
+ 
+ 	-- Chance weights for portions per generated order (keys must be 1..MaxGeprekPerOrder).
+ 	PortionWeights = { [1] = 5, [2] = 3, [3] = 2 },
+@@ -59,7 +61,8 @@ local config: OrderTypes.OrderConfig = {
+ 	-- Development only (ignored outside Roblox Studio) ----------------------
+ 	Debug = {
+ 		EnableDevHarness = true,
+-		DevAutoCookSeconds = 5, -- simulates Phase 4 cooking so Serve can be tested
++		DevAutoCook = false, -- true = harness fakes Cooking/Ready after Accept (conflicts with CookingService)
++		DevAutoCookSeconds = 5, -- used only when DevAutoCook = true
+ 		DevNextOrderDelaySeconds = 4,
+ 		RunSelfTest = true,
+ 	},
+diff --git a/src/ReplicatedStorage/Shared/Types/CookingTypes.luau b/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
+new file mode 100644
+index 0000000..f129c9e
+--- /dev/null
++++ b/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
+@@ -0,0 +1,41 @@
++--!strict
++--[[
++	CookingTypes — shared type definitions for Cooking & Serving (Phase 4).
++	Types only; no runtime logic.
++]]
++
++export type PortionStage = "NeedBox" | "NeedChicken" | "NeedSmash" | "NeedSambal"
++
++export type CookingConfig = {
++	-- Workspace objects (names are the ones the map already uses). Resolved once at start.
++	FoodBoxName: string, -- Workspace part holding the FoodBox ProximityPrompt
++	ChickenName: string, -- Workspace part holding the Chicken ProximityPrompt
++	GeprekName: string, -- Workspace model/part (geprek station) holding the Geprek ProximityPrompt
++	TrayPlacementName: string, -- Workspace part where FoodBox + finished geprek are placed
++	TrayPromptName: string, -- ProximityPrompt (or a part containing one) used to serve
++	SambalFolderPath: { string }, -- Workspace path of the folder with the sambal parts
++	SambalStations: { [string]: string }, -- station part name -> sambalId (must exist in OrderConfig.Sambal)
++
++	-- ServerStorage templates (Models)
++	FoodBoxTemplatePath: { string }, -- ServerStorage.FoodBox
++	ChickenTemplatePath: { string }, -- ServerStorage.Models.Chicken
++
++	-- Placement. ASSUMPTION / TUNABLE CONFIG
++	TrayPortionSpacing: Vector3, -- offset between portions on the tray (local to TrayPlacement)
++	TrayPlacementOffset: Vector3, -- offset of the first box from the TrayPlacement centre (local)
++	ChickenOnBoxOffset: Vector3, -- offset of the chicken above its box (local to TrayPlacement)
++	GeprekChickenOffset: Vector3, -- offset of the chicken above the geprek station pivot (world up)
++	SmashScale: number, -- visual scale applied when smashed (1 = no change)
++
++	-- Validation. ASSUMPTION / TUNABLE CONFIG
++	StepCooldownSeconds: number, -- per-player cooldown between cooking steps
++	DistanceSlack: number, -- studs added to prompt.MaxActivationDistance for the server-side check
++	ResolveTimeoutSeconds: number, -- how long start-up waits for world objects before warning
++	ServeCleanupDelaySeconds: number, -- served food stays visible this long before props are removed
++	HintSeconds: number, -- how long an error/hint message stays on the tray hint
++	ShowHint: boolean, -- BillboardGui on TrayPlacement (no client script needed)
++}
++
++export type FailReason = "WrongSambal" | "WrongCount"
++
++return {}
+diff --git a/src/ReplicatedStorage/Shared/Types/OrderTypes.luau b/src/ReplicatedStorage/Shared/Types/OrderTypes.luau
+index 2c0fe82..e801426 100644
+--- a/src/ReplicatedStorage/Shared/Types/OrderTypes.luau
++++ b/src/ReplicatedStorage/Shared/Types/OrderTypes.luau
+@@ -51,6 +51,7 @@ export type RemoteNames = {
+ 
+ export type DebugConfig = {
+ 	EnableDevHarness: boolean, -- only honoured inside Roblox Studio
++	DevAutoCook: boolean, -- Phase 4 CookingService now owns Cooking/Ready; keep false normally
+ 	DevAutoCookSeconds: number,
+ 	DevNextOrderDelaySeconds: number,
+ 	RunSelfTest: boolean, -- only honoured inside Roblox Studio
+diff --git a/src/ServerScriptService/Services/CookingService.luau b/src/ServerScriptService/Services/CookingService.luau
+new file mode 100644
+index 0000000..b19d661
+--- /dev/null
++++ b/src/ServerScriptService/Services/CookingService.luau
+@@ -0,0 +1,544 @@
++--!strict
++--[[
++	CookingService — Phase 4: player cooks at the world stations, server validates every step.
++
++	Flow per portion (repeated until the tray holds every portion of the order):
++		1. FoodBox prompt  -> clones ServerStorage.FoodBox onto TrayPlacement
++		2. Chicken prompt  -> clones ServerStorage.Models.Chicken into the Geprek station
++		3. Geprek prompt   -> smashes the chicken
++		4. Sambal prompt   -> (Hijau / Korek / Matah / Original) chicken is packed into the box on the tray
++	Then the Tray prompt serves the whole tray:
++		- tray matches the order  -> order Cooking -> Ready -> Served
++		- tray does NOT match     -> tray is cleared and the player restarts from step 1
++		  (the order stays Cooking and its 2-minute work timer keeps running; nothing is refused or paid)
++
++	Authority: the client sends nothing. ProximityPrompt.Triggered fires on the server; this service
++	checks cooldown, character, distance, step order and order status, and reads the expected sambal
++	from OrderService (never from the player). Rewards/reputation are NOT applied here (Phase 5 listens
++	to OrderService.OrderChanged).
++
++	Order binding: the first FoodBox press binds the player to the OLDEST order in status Accepted and
++	moves it to Cooking. One order = one session. MVP assumes one cook at a time (single-player).
++
++	Session cleanup: when the bound order reaches Served / Refused / Cancelled / Expired, every prop
++	clone is destroyed (Served after CookingConfig.ServeCleanupDelaySeconds).
++
++	Public API: Start(orderService, orderConfig, cookingConfig) -> { Destroy }.
++]]
++
++local Players = game:GetService("Players")
++local ReplicatedStorage = game:GetService("ReplicatedStorage")
++
++local OrderTypes = require(ReplicatedStorage.Shared.Types.OrderTypes)
++local CookingTypes = require(ReplicatedStorage.Shared.Types.CookingTypes)
++local OrderServiceModule = require(script.Parent.OrderService)
++local CookingStations = require(script.Parent.CookingStations)
++
++type PortionStage = CookingTypes.PortionStage
++
++local LOG = "[CookingService]"
++
++local NEXT_STEP_TEXT: { [string]: string } = {
++	NeedBox = "Ambil FoodBox",
++	NeedChicken = "Ambil ayam",
++	NeedSmash = "Geprek ayamnya",
++	NeedSambal = "Pilih sambal",
++}
++
++local TERMINAL: { [string]: boolean } = { Served = true, Refused = true, Cancelled = true, Expired = true }
++
++type Session = {
++	userId: number,
++	orderId: string,
++	totalPortions: number,
++	stage: PortionStage,
++	plated: { string }, -- sambalId per finished portion, in tray order
++	boxes: { Model },
++	currentBox: Model?,
++	currentChicken: Model?,
++}
++
++local CookingService = {}
++
++export type Handle = { Destroy: () -> () }
++
++local function getPosition(instance: Instance): Vector3?
++	if instance:IsA("BasePart") then
++		return instance.Position
++	elseif instance:IsA("Attachment") then
++		return instance.WorldPosition
++	elseif instance:IsA("Model") then
++		return instance:GetPivot().Position
++	end
++	return nil
++end
++
++local function getPivotCFrame(instance: Instance): CFrame?
++	if instance:IsA("BasePart") then
++		return instance.CFrame
++	elseif instance:IsA("Model") then
++		return instance:GetPivot()
++	end
++	return nil
++end
++
++-- Props are static decoration: anchor them so they never fall or push the player.
++local function freezeProp(model: Model)
++	for _, descendant in model:GetDescendants() do
++		if descendant:IsA("BasePart") then
++			descendant.Anchored = true
++		end
++	end
++end
++
++local function tally(sambalIds: { string }): { [string]: number }
++	local counts: { [string]: number } = {}
++	for _, id in sambalIds do
++		counts[id] = (counts[id] or 0) + 1
++	end
++	return counts
++end
++
++local function sameTally(a: { [string]: number }, b: { [string]: number }): boolean
++	for key, count in a do
++		if b[key] ~= count then
++			return false
++		end
++	end
++	for key, count in b do
++		if a[key] ~= count then
++			return false
++		end
++	end
++	return true
++end
++
++function CookingService.Start(
++	orderService: OrderServiceModule.OrderService,
++	orderConfig: OrderTypes.OrderConfig,
++	cfg: CookingTypes.CookingConfig
++): Handle
++	local destroyed = false
++	local stations: CookingStations.Stations? = nil
++	local connections: { RBXScriptConnection } = {}
++	local sessions: { [number]: Session } = {} -- userId -> session
++	local sessionByOrder: { [string]: number } = {} -- orderId -> userId
++	local lastStepAt: { [number]: number } = {}
++
++	-- Hint (server-built BillboardGui on TrayPlacement; no client script needed) -------------------
++	local hintLabel: TextLabel? = nil
++	local hintGui: BillboardGui? = nil
++	local hintToken = 0
++	local progressText = ""
++
++	local function setLabel(text: string)
++		local label, gui = hintLabel, hintGui
++		if label == nil or gui == nil then
++			return
++		end
++		label.Text = text
++		gui.Enabled = text ~= ""
++	end
++
++	local function showProgress(session: Session?)
++		if session == nil then
++			progressText = ""
++		else
++			local plated = #session.plated
++			if plated >= session.totalPortions then
++				progressText = `Porsi {plated}/{session.totalPortions} — sajikan di Tray`
++			else
++				progressText = `Porsi {plated + 1}/{session.totalPortions} — {NEXT_STEP_TEXT[session.stage]}`
++			end
++		end
++		hintToken += 1
++		setLabel(progressText)
++	end
++
++	local function flashHint(text: string)
++		hintToken += 1
++		local token = hintToken
++		setLabel(text)
++		task.delay(cfg.HintSeconds, function()
++			if not destroyed and hintToken == token then
++				setLabel(progressText)
++			end
++		end)
++	end
++
++	local function createHintGui(tray: BasePart)
++		if not cfg.ShowHint then
++			return
++		end
++		local gui = Instance.new("BillboardGui")
++		gui.Name = "CookingHintGui"
++		gui.Size = UDim2.fromOffset(280, 56)
++		gui.StudsOffset = Vector3.new(0, 3, 0)
++		gui.AlwaysOnTop = true
++		gui.Enabled = false
++		gui.Adornee = tray
++		local label = Instance.new("TextLabel")
++		label.Name = "Text"
++		label.Size = UDim2.fromScale(1, 1)
++		label.BackgroundColor3 = Color3.fromRGB(30, 24, 20)
++		label.BackgroundTransparency = 0.25
++		label.TextColor3 = Color3.fromRGB(245, 240, 225)
++		label.Font = Enum.Font.GothamBold
++		label.TextSize = 18
++		label.TextWrapped = true
++		label.Text = ""
++		label.Parent = gui
++		gui.Parent = tray
++		hintGui, hintLabel = gui, label
++	end
++
++	-- Session helpers ------------------------------------------------------------------------------
++	local function destroyProps(session: Session)
++		for _, box in session.boxes do
++			box:Destroy()
++		end
++		table.clear(session.boxes)
++		if session.currentChicken then
++			session.currentChicken:Destroy()
++		end
++		session.currentBox = nil
++		session.currentChicken = nil
++	end
++
++	local function endSession(session: Session, cleanupDelay: number)
++		if sessions[session.userId] == session then
++			sessions[session.userId] = nil
++		end
++		if sessionByOrder[session.orderId] == session.userId then
++			sessionByOrder[session.orderId] = nil
++		end
++		if next(sessions) == nil then
++			showProgress(nil)
++		end
++		if cleanupDelay > 0 then
++			task.delay(cleanupDelay, function()
++				destroyProps(session)
++			end)
++		else
++			destroyProps(session)
++		end
++	end
++
++	-- Failed tray: clear props and restart from step 1; the order itself is untouched.
++	local function restartSession(session: Session)
++		destroyProps(session)
++		table.clear(session.plated)
++		session.stage = "NeedBox"
++		showProgress(session)
++	end
++
++	local function slotCFrame(tray: BasePart, index: number): CFrame
++		return tray.CFrame * CFrame.new(cfg.TrayPlacementOffset + cfg.TrayPortionSpacing * index)
++	end
++
++	-- Validation shared by every prompt ------------------------------------------------------------
++	local function validatePlayer(player: Player, prompt: ProximityPrompt): boolean
++		local now = os.clock()
++		local last = lastStepAt[player.UserId]
++		if last ~= nil and now - last < cfg.StepCooldownSeconds then
++			return false
++		end
++		lastStepAt[player.UserId] = now
++
++		local character = player.Character
++		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
++		local root = character and character:FindFirstChild("HumanoidRootPart")
++		if humanoid == nil or humanoid.Health <= 0 or root == nil or not root:IsA("BasePart") then
++			return false
++		end
++		local promptParent = prompt.Parent
++		local promptPosition = if promptParent then getPosition(promptParent) else nil
++		if promptPosition == nil then
++			return false
++		end
++		return (root.Position - promptPosition).Magnitude <= prompt.MaxActivationDistance + cfg.DistanceSlack
++	end
++
++	local function bindSession(player: Player): Session?
++		for _, summary in orderService:GetActiveSummaries() do
++			if summary.status == "Accepted" and sessionByOrder[summary.orderId] == nil then
++				local ok, code = orderService:Transition(summary.orderId, "Cooking", "CookingStarted")
++				if not ok then
++					flashHint("Pesanan tidak bisa dimasak (" .. code .. ")")
++					return nil
++				end
++				local session: Session = {
++					userId = player.UserId,
++					orderId = summary.orderId,
++					totalPortions = summary.totalQuantity,
++					stage = "NeedBox",
++					plated = {},
++					boxes = {},
++					currentBox = nil,
++					currentChicken = nil,
++				}
++				sessions[player.UserId] = session
++				sessionByOrder[summary.orderId] = player.UserId
++				return session
++			end
++		end
++		flashHint("Terima pesanan dulu di layar")
++		return nil
++	end
++
++	-- A session is only usable while its order is still being cooked.
++	local function activeSession(player: Player): Session?
++		local session = sessions[player.UserId]
++		if session == nil then
++			return nil
++		end
++		if orderService:GetStatus(session.orderId) ~= "Cooking" then
++			endSession(session, 0)
++			return nil
++		end
++		return session
++	end
++
++	-- Step handlers (each runs synchronously => no double-processing of one trigger) ---------------
++	local function wrongStep(session: Session)
++		if #session.plated >= session.totalPortions then
++			flashHint("Nampan sudah lengkap — sajikan di Tray")
++		else
++			flashHint("Langkah berikutnya: " .. NEXT_STEP_TEXT[session.stage])
++		end
++	end
++
++	local function onFoodBox(player: Player, s: CookingStations.Stations)
++		local session = activeSession(player) or bindSession(player)
++		if session == nil then
++			return
++		end
++		if session.stage ~= "NeedBox" or #session.plated >= session.totalPortions then
++			return wrongStep(session)
++		end
++		local box = s.foodBoxTemplate:Clone()
++		box.Name = "FoodBoxClone"
++		freezeProp(box)
++		box:PivotTo(slotCFrame(s.trayPlacement, #session.plated))
++		box.Parent = workspace
++		table.insert(session.boxes, box)
++		session.currentBox = box
++		session.stage = "NeedChicken"
++		showProgress(session)
++	end
++
++	local function onChicken(player: Player, s: CookingStations.Stations)
++		local session = activeSession(player)
++		if session == nil then
++			flashHint("Mulai dengan mengambil FoodBox")
++			return
++		end
++		if session.stage ~= "NeedChicken" then
++			return wrongStep(session)
++		end
++		local chicken = s.chickenTemplate:Clone()
++		chicken.Name = "ChickenClone"
++		freezeProp(chicken)
++		local anchorCFrame = getPivotCFrame(s.geprekAnchor)
++		if anchorCFrame then
++			chicken:PivotTo(CFrame.new(anchorCFrame.Position + cfg.GeprekChickenOffset))
++		end
++		chicken.Parent = if s.geprekAnchor:IsA("Model") then s.geprekAnchor else workspace
++		session.currentChicken = chicken
++		session.stage = "NeedSmash"
++		showProgress(session)
++	end
++
++	local function onGeprek(player: Player, _s: CookingStations.Stations)
++		local session = activeSession(player)
++		if session == nil then
++			flashHint("Mulai dengan mengambil FoodBox")
++			return
++		end
++		local chicken = session.currentChicken
++		if session.stage ~= "NeedSmash" or chicken == nil then
++			return wrongStep(session)
++		end
++		if cfg.SmashScale ~= 1 then
++			pcall(function()
++				chicken:ScaleTo(cfg.SmashScale)
++			end)
++		end
++		chicken:SetAttribute("Smashed", true)
++		session.stage = "NeedSambal"
++		showProgress(session)
++	end
++
++	local function onSambal(player: Player, s: CookingStations.Stations, sambalId: string)
++		local session = activeSession(player)
++		if session == nil then
++			flashHint("Mulai dengan mengambil FoodBox")
++			return
++		end
++		local chicken, box = session.currentChicken, session.currentBox
++		if session.stage ~= "NeedSambal" or chicken == nil or box == nil then
++			return wrongStep(session)
++		end
++		-- Pack: chicken goes into the box that already sits on TrayPlacement.
++		chicken:SetAttribute("SambalId", sambalId)
++		chicken:PivotTo(slotCFrame(s.trayPlacement, #session.plated) * CFrame.new(cfg.ChickenOnBoxOffset))
++		chicken.Parent = box
++		table.insert(session.plated, sambalId)
++		session.currentChicken = nil
++		session.currentBox = nil
++		session.stage = "NeedBox"
++		showProgress(session)
++	end
++
++	local function onTray(player: Player, _s: CookingStations.Stations)
++		local session = activeSession(player)
++		if session == nil then
++			flashHint("Belum ada pesanan yang dimasak")
++			return
++		end
++		if #session.plated < session.totalPortions then
++			flashHint(`Pesanan belum lengkap ({#session.plated}/{session.totalPortions})`)
++			return
++		end
++
++		-- Expected sambal comes from the server order, never from the player.
++		local summary = orderService:GetSummary(session.orderId)
++		if summary == nil then
++			endSession(session, 0)
++			return
++		end
++		local expected: { [string]: number } = {}
++		for _, line in summary.lines do
++			expected[line.sambalId] = (expected[line.sambalId] or 0) + line.quantity
++		end
++		if not sameTally(expected, tally(session.plated)) then
++			restartSession(session)
++			flashHint("Pesanan salah! Ulangi dari awal")
++			return
++		end
++
++		local readyOk, readyCode = orderService:Transition(session.orderId, "Ready", "CookingDone")
++		if not readyOk then
++			-- OrderExpired: OrderChanged already ended the session. Anything else: keep session, tell player.
++			flashHint(if readyCode == "OrderExpired" then "Waktu habis!" else "Gagal menyajikan (" .. readyCode .. ")")
++			return
++		end
++		local servedOk, servedCode = orderService:Transition(session.orderId, "Served", "TrayServe")
++		if not servedOk then
++			flashHint(if servedCode == "OrderExpired" then "Waktu habis!" else "Gagal menyajikan (" .. servedCode .. ")")
++			return
++		end
++		-- OrderChanged(Served) ends the session and schedules prop cleanup.
++		flashHint("Pesanan disajikan!")
++	end
++
++	-- Wiring (runs once the map objects exist) ------------------------------------------------------
++	local function connectPrompt(prompt: ProximityPrompt, handler: (Player) -> ())
++		table.insert(
++			connections,
++			prompt.Triggered:Connect(function(player: Player)
++				if destroyed or not validatePlayer(player, prompt) then
++					return
++				end
++				handler(player)
++			end)
++		)
++	end
++
++	local function wire(s: CookingStations.Stations)
++		stations = s
++		createHintGui(s.trayPlacement)
++		connectPrompt(s.foodBoxPrompt, function(player)
++			onFoodBox(player, s)
++		end)
++		connectPrompt(s.chickenPrompt, function(player)
++			onChicken(player, s)
++		end)
++		connectPrompt(s.geprekPrompt, function(player)
++			onGeprek(player, s)
++		end)
++		for sambalId, prompt in s.sambalPrompts do
++			connectPrompt(prompt, function(player)
++				onSambal(player, s, sambalId)
++			end)
++		end
++		connectPrompt(s.trayPrompt, function(player)
++			onTray(player, s)
++		end)
++		print(LOG, "stations siap")
++	end
++
++	table.insert(
++		connections,
++		orderService.OrderChanged:Connect(function(orderId: string, _from: string, toStatus: string)
++			if not TERMINAL[toStatus] then
++				return
++			end
++			local userId = sessionByOrder[orderId]
++			local session = if userId then sessions[userId] else nil
++			if session == nil then
++				return
++			end
++			endSession(session, if toStatus == "Served" then cfg.ServeCleanupDelaySeconds else 0)
++			if toStatus == "Expired" then
++				flashHint("Waktu habis!")
++			elseif toStatus == "Cancelled" then
++				flashHint("Pesanan dibatalkan")
++			end
++		end)
++	)
++
++	table.insert(
++		connections,
++		Players.PlayerRemoving:Connect(function(player)
++			lastStepAt[player.UserId] = nil
++			local session = sessions[player.UserId]
++			if session then
++				endSession(session, 0)
++			end
++		end)
++	)
++
++	-- Bounded wait for the map (never blocks OrderSystem.Start).
++	task.spawn(function()
++		local deadline = os.clock() + cfg.ResolveTimeoutSeconds
++		local missing: { string } = {}
++		while not destroyed do
++			local resolved, missingNow = CookingStations.Resolve(cfg, orderConfig)
++			if resolved then
++				wire(resolved)
++				return
++			end
++			missing = missingNow
++			if os.clock() >= deadline then
++				break
++			end
++			task.wait(0.5)
++		end
++		if not destroyed then
++			warn(LOG, "CookingService TIDAK aktif. Objek belum ditemukan: " .. table.concat(missing, "; "))
++		end
++	end)
++
++	return {
++		Destroy = function()
++			destroyed = true
++			for _, connection in connections do
++				connection:Disconnect()
++			end
++			table.clear(connections)
++			for _, session in sessions do
++				destroyProps(session)
++			end
++			table.clear(sessions)
++			table.clear(sessionByOrder)
++			table.clear(lastStepAt)
++			if hintGui then
++				hintGui:Destroy()
++			end
++			stations = nil
++		end,
++	}
++end
++
++return CookingService
+diff --git a/src/ServerScriptService/Services/CookingStations.luau b/src/ServerScriptService/Services/CookingStations.luau
+new file mode 100644
+index 0000000..bc5ee01
+--- /dev/null
++++ b/src/ServerScriptService/Services/CookingStations.luau
+@@ -0,0 +1,157 @@
++--!strict
++--[[
++	CookingStations — finds the world objects and ServerStorage templates the cooking flow needs (Phase 4).
++
++	Everything is looked up by NAME from CookingConfig (no names hard-coded in other scripts), once,
++	and returned as one typed table. Resolve() never throws: it returns (stations, {}) when complete or
++	(nil, missingDescriptions) so the caller can retry / print a useful message.
++
++	Map contract (see ai/PHASE_4_COOKING.md):
++		Workspace.FoodBox            (part)  + ProximityPrompt
++		Workspace.Chicken            (part)  + ProximityPrompt
++		Workspace.Geprek             (model) + ProximityPrompt
++		Workspace.Stasion.Sambal.{Hijau,Korek,Matah,Original} (parts) + ProximityPrompt each
++		Workspace.TrayPlacement      (part)
++		Workspace.Tray               (ProximityPrompt, or a part/model containing one)
++		ServerStorage.FoodBox        (Model)
++		ServerStorage.Models.Chicken (Model)
++]]
++
++local ServerStorage = game:GetService("ServerStorage")
++local ReplicatedStorage = game:GetService("ReplicatedStorage")
++
++local CookingTypes = require(ReplicatedStorage.Shared.Types.CookingTypes)
++local OrderTypes = require(ReplicatedStorage.Shared.Types.OrderTypes)
++
++local CookingStations = {}
++
++export type Stations = {
++	foodBoxPrompt: ProximityPrompt,
++	chickenPrompt: ProximityPrompt,
++	geprekPrompt: ProximityPrompt,
++	geprekAnchor: Instance, -- Model or BasePart that owns the geprek station
++	trayPlacement: BasePart,
++	trayPrompt: ProximityPrompt,
++	sambalPrompts: { [string]: ProximityPrompt }, -- sambalId -> prompt
++	foodBoxTemplate: Model,
++	chickenTemplate: Model,
++}
++
++local function findPrompt(root: Instance?): ProximityPrompt?
++	if root == nil then
++		return nil
++	end
++	if root:IsA("ProximityPrompt") then
++		return root
++	end
++	return root:FindFirstChildWhichIsA("ProximityPrompt", true)
++end
++
++-- First descendant of workspace with this exact name (first match wins; keep world names unique).
++local function findInWorkspace(name: string): Instance?
++	return workspace:FindFirstChild(name, true)
++end
++
++local function findByPath(root: Instance, path: { string }): Instance?
++	local current: Instance? = root
++	for _, segment in path do
++		if current == nil then
++			return nil
++		end
++		current = current:FindFirstChild(segment)
++	end
++	return current
++end
++
++function CookingStations.Resolve(cfg: CookingTypes.CookingConfig, orderConfig: OrderTypes.OrderConfig): (Stations?, { string })
++	local missing: { string } = {}
++
++	local function need<T>(value: T?, description: string): T?
++		if value == nil then
++			table.insert(missing, description)
++		end
++		return value
++	end
++
++	local foodBoxRoot = findInWorkspace(cfg.FoodBoxName)
++	local foodBoxPrompt = need(findPrompt(foodBoxRoot), `Workspace "{cfg.FoodBoxName}" + ProximityPrompt`)
++
++	local chickenRoot = findInWorkspace(cfg.ChickenName)
++	local chickenPrompt = need(findPrompt(chickenRoot), `Workspace "{cfg.ChickenName}" + ProximityPrompt`)
++
++	local geprekRoot = findInWorkspace(cfg.GeprekName)
++	local geprekPrompt = need(findPrompt(geprekRoot), `Workspace "{cfg.GeprekName}" + ProximityPrompt`)
++	local geprekAnchor: Instance? = nil
++	if geprekRoot then
++		geprekAnchor = if geprekRoot:IsA("ProximityPrompt") then geprekRoot.Parent else geprekRoot
++	end
++
++	local trayPlacementInstance = findInWorkspace(cfg.TrayPlacementName)
++	local trayPlacement: BasePart? = nil
++	if trayPlacementInstance and trayPlacementInstance:IsA("BasePart") then
++		trayPlacement = trayPlacementInstance
++	else
++		table.insert(missing, `Workspace "{cfg.TrayPlacementName}" (harus BasePart)`)
++	end
++
++	-- Prefer a ProximityPrompt literally named "Tray"; otherwise any instance named "Tray" that contains one.
++	local trayPrompt: ProximityPrompt? = nil
++	for _, instance in workspace:GetDescendants() do
++		if instance.Name == cfg.TrayPromptName and instance:IsA("ProximityPrompt") then
++			trayPrompt = instance
++			break
++		end
++	end
++	if trayPrompt == nil then
++		trayPrompt = findPrompt(findInWorkspace(cfg.TrayPromptName))
++	end
++	need(trayPrompt, `Workspace ProximityPrompt "{cfg.TrayPromptName}"`)
++
++	local sambalFolder = findByPath(workspace, cfg.SambalFolderPath)
++	local sambalPrompts: { [string]: ProximityPrompt } = {}
++	if sambalFolder == nil then
++		table.insert(missing, "Workspace." .. table.concat(cfg.SambalFolderPath, "."))
++	else
++		for stationName, sambalId in cfg.SambalStations do
++			if orderConfig.Sambal[sambalId] == nil then
++				table.insert(missing, `CookingConfig.SambalStations["{stationName}"] -> "{sambalId}" tidak ada di OrderConfig.Sambal`)
++			else
++				local prompt = findPrompt(sambalFolder:FindFirstChild(stationName))
++				if prompt then
++					sambalPrompts[sambalId] = prompt
++				else
++					table.insert(missing, `Workspace.{table.concat(cfg.SambalFolderPath, ".")}.{stationName} + ProximityPrompt`)
++				end
++			end
++		end
++	end
++
++	local foodBoxTemplate = findByPath(ServerStorage, cfg.FoodBoxTemplatePath)
++	if foodBoxTemplate == nil or not foodBoxTemplate:IsA("Model") then
++		foodBoxTemplate = nil
++		table.insert(missing, "ServerStorage." .. table.concat(cfg.FoodBoxTemplatePath, ".") .. " (Model)")
++	end
++	local chickenTemplate = findByPath(ServerStorage, cfg.ChickenTemplatePath)
++	if chickenTemplate == nil or not chickenTemplate:IsA("Model") then
++		chickenTemplate = nil
++		table.insert(missing, "ServerStorage." .. table.concat(cfg.ChickenTemplatePath, ".") .. " (Model)")
++	end
++
++	if #missing > 0 then
++		return nil, missing
++	end
++
++	return {
++		foodBoxPrompt = foodBoxPrompt :: ProximityPrompt,
++		chickenPrompt = chickenPrompt :: ProximityPrompt,
++		geprekPrompt = geprekPrompt :: ProximityPrompt,
++		geprekAnchor = geprekAnchor :: Instance,
++		trayPlacement = trayPlacement :: BasePart,
++		trayPrompt = trayPrompt :: ProximityPrompt,
++		sambalPrompts = sambalPrompts,
++		foodBoxTemplate = foodBoxTemplate :: Model,
++		chickenTemplate = chickenTemplate :: Model,
++	}, missing
++end
++
++return CookingStations
+diff --git a/src/ServerScriptService/Services/Dev/OrderDevHarness.luau b/src/ServerScriptService/Services/Dev/OrderDevHarness.luau
+index d0f709c..87f94bb 100644
+--- a/src/ServerScriptService/Services/Dev/OrderDevHarness.luau
++++ b/src/ServerScriptService/Services/Dev/OrderDevHarness.luau
+@@ -4,8 +4,8 @@
+ 	and CookingService exist.
+ 
+ 	- Creates a fake customer order automatically (customerId "dev_customer_N").
+-	- After you press Terima (Accept) it simulates Phase 4: Cooking, then Ready after DevAutoCookSeconds,
+-	  so the Antar (Serve) prompt can be tested. Let the clock run out to test the 2-minute expiry.
++	- Only if Debug.DevAutoCook = true: after Terima (Accept) it fakes Cooking, then Ready after
++	  DevAutoCookSeconds. Default is false because CookingService (Phase 4) now drives these states. Let the clock run out to test the 2-minute expiry.
+ 	- After an order ends, the next one is created after DevNextOrderDelaySeconds.
+ 
+ 	Disabled automatically outside Studio, or via OrderConfig.Debug.EnableDevHarness = false.
+@@ -60,7 +60,7 @@ function OrderDevHarness.Start(orderService: OrderServiceModule.OrderService, co
+ 	end
+ 
+ 	local connection = orderService.OrderChanged:Connect(function(orderId: string, _from: string, toStatus: string)
+-		if toStatus == "Accepted" then
++		if toStatus == "Accepted" and debugCfg.DevAutoCook then
+ 			orderService:Transition(orderId, "Cooking")
+ 			task.delay(debugCfg.DevAutoCookSeconds, function()
+ 				if orderService:GetStatus(orderId) == "Cooking" then
+diff --git a/src/ServerScriptService/Services/Dev/OrderSelfTest.luau b/src/ServerScriptService/Services/Dev/OrderSelfTest.luau
+index e1ddaab..d88bd15 100644
+--- a/src/ServerScriptService/Services/Dev/OrderSelfTest.luau
++++ b/src/ServerScriptService/Services/Dev/OrderSelfTest.luau
+@@ -62,15 +62,15 @@ function OrderSelfTest.Run(config: OrderTypes.OrderConfig): (number, number)
+ 	-- max 3 geprek
+ 	do
+ 		local service = newService()
+-		check("3 geprek accepted", (service:CreateOrder({ customerId = "a", lines = { line("sedang", 3) } })))
+-		check("4 geprek rejected", not (service:CreateOrder({ customerId = "b", lines = { line("sedang", 4) } })))
++		check("3 geprek accepted", (service:CreateOrder({ customerId = "a", lines = { line("original", 3) } })))
++		check("4 geprek rejected", not (service:CreateOrder({ customerId = "b", lines = { line("original", 4) } })))
+ 		check(
+ 			"2+2 geprek across lines rejected",
+-			not (service:CreateOrder({ customerId = "c", lines = { line("sedang", 2), line("pedas", 2) } }))
++			not (service:CreateOrder({ customerId = "c", lines = { line("original", 2), line("korek", 2) } }))
+ 		)
+ 		check("unknown sambal rejected", not (service:CreateOrder({ customerId = "d", lines = { line("nope", 1) } })))
+-		check("zero quantity rejected", not (service:CreateOrder({ customerId = "e", lines = { line("sedang", 0) } })))
+-		check("fractional quantity rejected", not (service:CreateOrder({ customerId = "f", lines = { line("sedang", 1.5) } })))
++		check("zero quantity rejected", not (service:CreateOrder({ customerId = "e", lines = { line("original", 0) } })))
++		check("fractional quantity rejected", not (service:CreateOrder({ customerId = "f", lines = { line("original", 1.5) } })))
+ 		check("empty lines rejected", not (service:CreateOrder({ customerId = "g", lines = {} })))
+ 		service:Destroy()
+ 	end
+@@ -94,10 +94,10 @@ function OrderSelfTest.Run(config: OrderTypes.OrderConfig): (number, number)
+ 	-- pricing from config
+ 	do
+ 		local service = newService()
+-		local _, id = service:CreateOrder({ customerId = "p", lines = { line("sedang", 2), line("extra_pedas", 1) } })
++		local _, id = service:CreateOrder({ customerId = "p", lines = { line("original", 2), line("matah", 1) } })
+ 		local summary = service:GetSummary(id)
+-		local expected = 2 * (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.sedang.extraPrice)
+-			+ (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.extra_pedas.extraPrice)
++		local expected = 2 * (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.original.extraPrice)
++			+ (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.matah.extraPrice)
+ 		check("total price computed from config", summary ~= nil and summary.totalPrice == expected)
+ 		service:Destroy()
+ 	end
+diff --git a/src/ServerScriptService/Services/OrderSystem.luau b/src/ServerScriptService/Services/OrderSystem.luau
+index e81c546..4f5c6e3 100644
+--- a/src/ServerScriptService/Services/OrderSystem.luau
++++ b/src/ServerScriptService/Services/OrderSystem.luau
+@@ -7,7 +7,7 @@
+ 		CustomerService   -> handle.OrderService:CreateOrder({ customerId = ..., customerCategory = ... })
+ 		                     handle.Timeouts.OnCustomerLeft(customerId)
+ 		DayCycleService   -> handle.Timeouts.OnShopClosing("ShopClosed"); handle.ActionHandler:SetActionGate(...)
+-		CookingService    -> handle.OrderService:Transition(orderId, "Cooking" | "Ready")
++		CookingService    -> started below (Phase 4): drives Accepted -> Cooking -> Ready -> Served from the world stations
+ 		Economy/Reputation-> handle.OrderService.OrderChanged (toStatus == "Served" | "Refused")
+ ]]
+ 
+@@ -21,6 +21,8 @@ local OrderActionHandler = require(script.Parent.OrderActionHandler)
+ local OrderRemotes = require(script.Parent.OrderRemotes)
+ local OrderScreenService = require(script.Parent.OrderScreenService)
+ local OrderTimeoutService = require(script.Parent.OrderTimeoutService)
++local CookingConfig = require(ReplicatedStorage.Shared.Config.CookingConfig)
++local CookingService = require(script.Parent.CookingService)
+ local OrderDevHarness = require(script.Parent.Dev.OrderDevHarness)
+ local OrderSelfTest = require(script.Parent.Dev.OrderSelfTest)
+ 
+@@ -30,6 +32,7 @@ export type Handle = {
+ 	OrderService: OrderService.OrderService,
+ 	ActionHandler: OrderActionHandler.OrderActionHandler,
+ 	Timeouts: OrderTimeoutService.Handle,
++	Cooking: CookingService.Handle,
+ 	Destroy: () -> (),
+ }
+ 
+@@ -53,6 +56,7 @@ function OrderSystem.Start(): Handle
+ 		return screen.GetPosition()
+ 	end)
+ 	local timeouts = OrderTimeoutService.Start(orderService, config)
++	local cooking = CookingService.Start(orderService, config, CookingConfig)
+ 
+ 	local harness: OrderDevHarness.Handle? = nil
+ 	if inStudio and config.Debug.EnableDevHarness then
+@@ -63,11 +67,13 @@ function OrderSystem.Start(): Handle
+ 		OrderService = orderService,
+ 		ActionHandler = actionHandler,
+ 		Timeouts = timeouts,
++		Cooking = cooking,
+ 		Destroy = function()
+ 			started = false
+ 			if harness then
+ 				harness.Destroy()
+ 			end
++			cooking.Destroy()
+ 			timeouts.Destroy()
+ 			screen.Destroy()
+ 			remotes.Destroy()

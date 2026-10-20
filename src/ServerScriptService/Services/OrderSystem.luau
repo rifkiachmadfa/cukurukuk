@@ -7,7 +7,7 @@
 		CustomerService   -> handle.OrderService:CreateOrder({ customerId = ..., customerCategory = ... })
 		                     handle.Timeouts.OnCustomerLeft(customerId)
 		DayCycleService   -> handle.Timeouts.OnShopClosing("ShopClosed"); handle.ActionHandler:SetActionGate(...)
-		CookingService    -> handle.OrderService:Transition(orderId, "Cooking" | "Ready")
+		CookingService    -> started below (Phase 4): drives Accepted -> Cooking -> Ready -> Served from the world stations
 		Economy/Reputation-> handle.OrderService.OrderChanged (toStatus == "Served" | "Refused")
 ]]
 
@@ -21,6 +21,8 @@ local OrderActionHandler = require(script.Parent.OrderActionHandler)
 local OrderRemotes = require(script.Parent.OrderRemotes)
 local OrderScreenService = require(script.Parent.OrderScreenService)
 local OrderTimeoutService = require(script.Parent.OrderTimeoutService)
+local CookingConfig = require(ReplicatedStorage.Shared.Config.CookingConfig)
+local CookingService = require(script.Parent.CookingService)
 local OrderDevHarness = require(script.Parent.Dev.OrderDevHarness)
 local OrderSelfTest = require(script.Parent.Dev.OrderSelfTest)
 
@@ -30,6 +32,7 @@ export type Handle = {
 	OrderService: OrderService.OrderService,
 	ActionHandler: OrderActionHandler.OrderActionHandler,
 	Timeouts: OrderTimeoutService.Handle,
+	Cooking: CookingService.Handle,
 	Destroy: () -> (),
 }
 
@@ -53,6 +56,7 @@ function OrderSystem.Start(): Handle
 		return screen.GetPosition()
 	end)
 	local timeouts = OrderTimeoutService.Start(orderService, config)
+	local cooking = CookingService.Start(orderService, config, CookingConfig)
 
 	local harness: OrderDevHarness.Handle? = nil
 	if inStudio and config.Debug.EnableDevHarness then
@@ -63,11 +67,13 @@ function OrderSystem.Start(): Handle
 		OrderService = orderService,
 		ActionHandler = actionHandler,
 		Timeouts = timeouts,
+		Cooking = cooking,
 		Destroy = function()
 			started = false
 			if harness then
 				harness.Destroy()
 			end
+			cooking.Destroy()
 			timeouts.Destroy()
 			screen.Destroy()
 			remotes.Destroy()

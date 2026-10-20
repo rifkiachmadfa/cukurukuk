@@ -1,0 +1,87 @@
+diff --git a/src/ReplicatedStorage/Shared/Config/CookingConfig.luau b/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
+index 4bb9380..d8b2786 100644
+--- a/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
++++ b/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
+@@ -8,6 +8,7 @@
+ local CookingTypes = require(script.Parent.Parent.Types.CookingTypes)
+ 
+ local config: CookingTypes.CookingConfig = {
++	StationRootPath = { "Stasion" },
+ 	FoodBoxName = "FoodBox",
+ 	ChickenName = "Chicken",
+ 	GeprekName = "Geprek",
+diff --git a/src/ReplicatedStorage/Shared/Types/CookingTypes.luau b/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
+index f129c9e..7d66276 100644
+--- a/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
++++ b/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
+@@ -8,6 +8,7 @@ export type PortionStage = "NeedBox" | "NeedChicken" | "NeedSmash" | "NeedSambal
+ 
+ export type CookingConfig = {
+ 	-- Workspace objects (names are the ones the map already uses). Resolved once at start.
++	StationRootPath: { string }, -- Workspace folder searched FIRST for the objects below (falls back to all of Workspace)
+ 	FoodBoxName: string, -- Workspace part holding the FoodBox ProximityPrompt
+ 	ChickenName: string, -- Workspace part holding the Chicken ProximityPrompt
+ 	GeprekName: string, -- Workspace model/part (geprek station) holding the Geprek ProximityPrompt
+diff --git a/src/ServerScriptService/Services/CookingStations.luau b/src/ServerScriptService/Services/CookingStations.luau
+index bc5ee01..d799c8d 100644
+--- a/src/ServerScriptService/Services/CookingStations.luau
++++ b/src/ServerScriptService/Services/CookingStations.luau
+@@ -7,9 +7,10 @@
+ 	(nil, missingDescriptions) so the caller can retry / print a useful message.
+ 
+ 	Map contract (see ai/PHASE_4_COOKING.md):
+-		Workspace.FoodBox            (part)  + ProximityPrompt
+-		Workspace.Chicken            (part)  + ProximityPrompt
+-		Workspace.Geprek             (model) + ProximityPrompt
++		Objects below are searched in Workspace.Stasion first, then anywhere in Workspace:
++		FoodBox            (part)  + ProximityPrompt
++		Chicken            (part)  + ProximityPrompt   (e.g. Workspace.Stasion.Chicken)
++		Geprek             (model) + ProximityPrompt
+ 		Workspace.Stasion.Sambal.{Hijau,Korek,Matah,Original} (parts) + ProximityPrompt each
+ 		Workspace.TrayPlacement      (part)
+ 		Workspace.Tray               (ProximityPrompt, or a part/model containing one)
+@@ -47,11 +48,6 @@ local function findPrompt(root: Instance?): ProximityPrompt?
+ 	return root:FindFirstChildWhichIsA("ProximityPrompt", true)
+ end
+ 
+--- First descendant of workspace with this exact name (first match wins; keep world names unique).
+-local function findInWorkspace(name: string): Instance?
+-	return workspace:FindFirstChild(name, true)
+-end
+-
+ local function findByPath(root: Instance, path: { string }): Instance?
+ 	local current: Instance? = root
+ 	for _, segment in path do
+@@ -66,6 +62,14 @@ end
+ function CookingStations.Resolve(cfg: CookingTypes.CookingConfig, orderConfig: OrderTypes.OrderConfig): (Stations?, { string })
+ 	local missing: { string } = {}
+ 
++	-- Search Workspace.<StationRootPath> first (e.g. Workspace.Stasion), then all of Workspace.
++	-- First match wins; keep these names unique in the map.
++	local scopeRoot = findByPath(workspace, cfg.StationRootPath)
++	local function findInWorkspace(name: string): Instance?
++		local inScope = if scopeRoot then scopeRoot:FindFirstChild(name, true) else nil
++		return inScope or workspace:FindFirstChild(name, true)
++	end
++
+ 	local function need<T>(value: T?, description: string): T?
+ 		if value == nil then
+ 			table.insert(missing, description)
+@@ -96,9 +100,14 @@ function CookingStations.Resolve(cfg: CookingTypes.CookingConfig, orderConfig: O
+ 
+ 	-- Prefer a ProximityPrompt literally named "Tray"; otherwise any instance named "Tray" that contains one.
+ 	local trayPrompt: ProximityPrompt? = nil
+-	for _, instance in workspace:GetDescendants() do
+-		if instance.Name == cfg.TrayPromptName and instance:IsA("ProximityPrompt") then
+-			trayPrompt = instance
++	for _, searchRoot in { scopeRoot or workspace, workspace } do
++		for _, instance in searchRoot:GetDescendants() do
++			if instance.Name == cfg.TrayPromptName and instance:IsA("ProximityPrompt") then
++				trayPrompt = instance
++				break
++			end
++		end
++		if trayPrompt then
+ 			break
+ 		end
+ 	end

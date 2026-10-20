@@ -62,15 +62,15 @@ function OrderSelfTest.Run(config: OrderTypes.OrderConfig): (number, number)
 	-- max 3 geprek
 	do
 		local service = newService()
-		check("3 geprek accepted", (service:CreateOrder({ customerId = "a", lines = { line("sedang", 3) } })))
-		check("4 geprek rejected", not (service:CreateOrder({ customerId = "b", lines = { line("sedang", 4) } })))
+		check("3 geprek accepted", (service:CreateOrder({ customerId = "a", lines = { line("original", 3) } })))
+		check("4 geprek rejected", not (service:CreateOrder({ customerId = "b", lines = { line("original", 4) } })))
 		check(
 			"2+2 geprek across lines rejected",
-			not (service:CreateOrder({ customerId = "c", lines = { line("sedang", 2), line("pedas", 2) } }))
+			not (service:CreateOrder({ customerId = "c", lines = { line("original", 2), line("korek", 2) } }))
 		)
 		check("unknown sambal rejected", not (service:CreateOrder({ customerId = "d", lines = { line("nope", 1) } })))
-		check("zero quantity rejected", not (service:CreateOrder({ customerId = "e", lines = { line("sedang", 0) } })))
-		check("fractional quantity rejected", not (service:CreateOrder({ customerId = "f", lines = { line("sedang", 1.5) } })))
+		check("zero quantity rejected", not (service:CreateOrder({ customerId = "e", lines = { line("original", 0) } })))
+		check("fractional quantity rejected", not (service:CreateOrder({ customerId = "f", lines = { line("original", 1.5) } })))
 		check("empty lines rejected", not (service:CreateOrder({ customerId = "g", lines = {} })))
 		service:Destroy()
 	end
@@ -94,10 +94,10 @@ function OrderSelfTest.Run(config: OrderTypes.OrderConfig): (number, number)
 	-- pricing from config
 	do
 		local service = newService()
-		local _, id = service:CreateOrder({ customerId = "p", lines = { line("sedang", 2), line("extra_pedas", 1) } })
+		local _, id = service:CreateOrder({ customerId = "p", lines = { line("original", 2), line("matah", 1) } })
 		local summary = service:GetSummary(id)
-		local expected = 2 * (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.sedang.extraPrice)
-			+ (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.extra_pedas.extraPrice)
+		local expected = 2 * (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.original.extraPrice)
+			+ (config.Recipes[config.DefaultRecipeId].basePrice + config.Sambal.matah.extraPrice)
 		check("total price computed from config", summary ~= nil and summary.totalPrice == expected)
 		service:Destroy()
 	end

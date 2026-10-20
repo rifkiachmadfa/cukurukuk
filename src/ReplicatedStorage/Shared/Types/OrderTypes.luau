@@ -51,6 +51,7 @@ export type RemoteNames = {
 
 export type DebugConfig = {
 	EnableDevHarness: boolean, -- only honoured inside Roblox Studio
+	DevAutoCook: boolean, -- Phase 4 CookingService now owns Cooking/Ready; keep false normally
 	DevAutoCookSeconds: number,
 	DevNextOrderDelaySeconds: number,
 	RunSelfTest: boolean, -- only honoured inside Roblox Studio

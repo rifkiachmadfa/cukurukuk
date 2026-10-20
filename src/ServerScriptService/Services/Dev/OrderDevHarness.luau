@@ -4,8 +4,8 @@
 	and CookingService exist.
 
 	- Creates a fake customer order automatically (customerId "dev_customer_N").
-	- After you press Terima (Accept) it simulates Phase 4: Cooking, then Ready after DevAutoCookSeconds,
-	  so the Antar (Serve) prompt can be tested. Let the clock run out to test the 2-minute expiry.
+	- Only if Debug.DevAutoCook = true: after Terima (Accept) it fakes Cooking, then Ready after
+	  DevAutoCookSeconds. Default is false because CookingService (Phase 4) now drives these states. Let the clock run out to test the 2-minute expiry.
 	- After an order ends, the next one is created after DevNextOrderDelaySeconds.
 
 	Disabled automatically outside Studio, or via OrderConfig.Debug.EnableDevHarness = false.
@@ -60,7 +60,7 @@ function OrderDevHarness.Start(orderService: OrderServiceModule.OrderService, co
 	end
 
 	local connection = orderService.OrderChanged:Connect(function(orderId: string, _from: string, toStatus: string)
-		if toStatus == "Accepted" then
+		if toStatus == "Accepted" and debugCfg.DevAutoCook then
 			orderService:Transition(orderId, "Cooking")
 			task.delay(debugCfg.DevAutoCookSeconds, function()
 				if orderService:GetStatus(orderId) == "Cooking" then

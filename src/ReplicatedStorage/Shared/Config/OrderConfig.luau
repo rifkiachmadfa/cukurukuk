@@ -30,13 +30,15 @@ local config: OrderTypes.OrderConfig = {
 	},
 
 	Sambal = {
-		tidak_pedas = { displayName = "Tidak Pedas", extraPrice = 0, weight = 2 },
-		sedang = { displayName = "Sedang", extraPrice = 0, weight = 4 },
-		pedas = { displayName = "Pedas", extraPrice = 1000, weight = 3 },
-		extra_pedas = { displayName = "Extra Pedas", extraPrice = 2000, weight = 1 },
+		-- Ids match the 4 sambal stations in Workspace.Stasion.Sambal (see CookingConfig.SambalStations).
+		-- extraPrice / weight are ASSUMPTIONS. TUNABLE CONFIG
+		hijau = { displayName = "Sambal Hijau", extraPrice = 0, weight = 3 },
+		korek = { displayName = "Sambal Korek", extraPrice = 1000, weight = 3 },
+		matah = { displayName = "Sambal Matah", extraPrice = 1000, weight = 2 },
+		original = { displayName = "Sambal Original", extraPrice = 0, weight = 4 },
 	},
 	-- Deterministic iteration order (also display order).
-	SambalOrder = { "tidak_pedas", "sedang", "pedas", "extra_pedas" },
+	SambalOrder = { "original", "hijau", "korek", "matah" },
 
 	-- Chance weights for portions per generated order (keys must be 1..MaxGeprekPerOrder).
 	PortionWeights = { [1] = 5, [2] = 3, [3] = 2 },
@@ -59,7 +61,8 @@ local config: OrderTypes.OrderConfig = {
 	-- Development only (ignored outside Roblox Studio) ----------------------
 	Debug = {
 		EnableDevHarness = true,
-		DevAutoCookSeconds = 5, -- simulates Phase 4 cooking so Serve can be tested
+		DevAutoCook = false, -- true = harness fakes Cooking/Ready after Accept (conflicts with CookingService)
+		DevAutoCookSeconds = 5, -- used only when DevAutoCook = true
 		DevNextOrderDelaySeconds = 4,
 		RunSelfTest = true,
 	},
