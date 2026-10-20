@@ -434,6 +434,11 @@ function CookingService.Start(
 
 	-- Wiring (runs once the map objects exist) ------------------------------------------------------
 	local function connectPrompt(prompt: ProximityPrompt, handler: (Player) -> ())
+		-- Props placed on a station (e.g. the chicken on Geprek) would hide the prompt behind
+		-- line-of-sight checks, and a prompt left disabled in the map would never show.
+		prompt.RequiresLineOfSight = false
+		prompt.Enabled = true
+		print(LOG, "prompt aktif:", prompt:GetFullName())
 		table.insert(
 			connections,
 			prompt.Triggered:Connect(function(player: Player)

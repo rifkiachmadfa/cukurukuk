@@ -48,13 +48,28 @@ local function findPrompt(root: Instance?): ProximityPrompt?
 	return root:FindFirstChildWhichIsA("ProximityPrompt", true)
 end
 
+-- Roblox name lookup is case-sensitive ("Foodbox" ~= "FoodBox"); try exact first, then ignore case.
+local function findChildIgnoreCase(parent: Instance, name: string): Instance?
+	local exact = parent:FindFirstChild(name)
+	if exact then
+		return exact
+	end
+	local lowered = string.lower(name)
+	for _, child in parent:GetChildren() do
+		if string.lower(child.Name) == lowered then
+			return child
+		end
+	end
+	return nil
+end
+
 local function findByPath(root: Instance, path: { string }): Instance?
 	local current: Instance? = root
 	for _, segment in path do
 		if current == nil then
 			return nil
 		end
-		current = current:FindFirstChild(segment)
+		current = findChildIgnoreCase(current, segment)
 	end
 	return current
 end
@@ -80,10 +95,16 @@ function CookingStations.Resolve(cfg: CookingTypes.CookingConfig, orderConfig: O
 	local foodBoxRoot = findInWorkspace(cfg.FoodBoxName)
 	local foodBoxPrompt = need(findPrompt(foodBoxRoot), `Workspace "{cfg.FoodBoxName}" + ProximityPrompt`)
 
-	local chickenRoot = findInWorkspace(cfg.ChickenName)
+	-- Exact path first (e.g. Workspace.Stasion.Geprek), then search by name.
+	local function locate(path: { string }?, name: string): Instance?
+		local exact = if path then findByPath(workspace, path) else nil
+		return exact or findInWorkspace(name)
+	end
+
+	local chickenRoot = locate(cfg.ChickenPath, cfg.ChickenName)
 	local chickenPrompt = need(findPrompt(chickenRoot), `Workspace "{cfg.ChickenName}" + ProximityPrompt`)
 
-	local geprekRoot = findInWorkspace(cfg.GeprekName)
+	local geprekRoot = locate(cfg.GeprekPath, cfg.GeprekName)
 	local geprekPrompt = need(findPrompt(geprekRoot), `Workspace "{cfg.GeprekName}" + ProximityPrompt`)
 	local geprekAnchor: Instance? = nil
 	if geprekRoot then

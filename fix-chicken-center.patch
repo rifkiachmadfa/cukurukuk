@@ -1,0 +1,112 @@
+diff --git a/src/ReplicatedStorage/Shared/Config/CookingConfig.luau b/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
+index 896e69b..fbc3dc9 100644
+--- a/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
++++ b/src/ReplicatedStorage/Shared/Config/CookingConfig.luau
+@@ -29,7 +29,7 @@ local config: CookingTypes.CookingConfig = {
+ 	TrayPortionSpacing = Vector3.new(2.5, 0, 0),
+ 	TrayPlacementOffset = Vector3.new(0, 0.5, 0),
+ 	ChickenOnBoxOffset = Vector3.new(0, 0.6, 0),
+-	GeprekChickenOffset = Vector3.new(0, 1, 0),
++	GeprekChickenOffset = Vector3.zero, -- extra shift from "centred on top of Geprek" (x, y, z in world studs)
+ 	SmashScale = 0.85,
+ 
+ 	StepCooldownSeconds = 0.3,
+diff --git a/src/ReplicatedStorage/Shared/Types/CookingTypes.luau b/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
+index 7d66276..41d5d5a 100644
+--- a/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
++++ b/src/ReplicatedStorage/Shared/Types/CookingTypes.luau
+@@ -25,7 +25,7 @@ export type CookingConfig = {
+ 	TrayPortionSpacing: Vector3, -- offset between portions on the tray (local to TrayPlacement)
+ 	TrayPlacementOffset: Vector3, -- offset of the first box from the TrayPlacement centre (local)
+ 	ChickenOnBoxOffset: Vector3, -- offset of the chicken above its box (local to TrayPlacement)
+-	GeprekChickenOffset: Vector3, -- offset of the chicken above the geprek station pivot (world up)
++	GeprekChickenOffset: Vector3, -- extra shift added after centring the chicken on top of the Geprek station
+ 	SmashScale: number, -- visual scale applied when smashed (1 = no change)
+ 
+ 	-- Validation. ASSUMPTION / TUNABLE CONFIG
+diff --git a/src/ServerScriptService/Services/CookingService.luau b/src/ServerScriptService/Services/CookingService.luau
+index b19d661..53bf510 100644
+--- a/src/ServerScriptService/Services/CookingService.luau
++++ b/src/ServerScriptService/Services/CookingService.luau
+@@ -56,6 +56,7 @@ type Session = {
+ 	boxes: { Model },
+ 	currentBox: Model?,
+ 	currentChicken: Model?,
++	geprekSurface: Vector3?, -- centre of the Geprek station top, fixed when the chicken is placed
+ }
+ 
+ local CookingService = {}
+@@ -73,13 +74,32 @@ local function getPosition(instance: Instance): Vector3?
+ 	return nil
+ end
+ 
+-local function getPivotCFrame(instance: Instance): CFrame?
+-	if instance:IsA("BasePart") then
+-		return instance.CFrame
+-	elseif instance:IsA("Model") then
+-		return instance:GetPivot()
++-- Bounding box (centre CFrame + size) of a Model or BasePart; assumes the station stands upright.
++local function getBounds(instance: Instance): (CFrame?, Vector3?)
++	if instance:IsA("Model") then
++		local cf, size = instance:GetBoundingBox()
++		return cf, size
++	elseif instance:IsA("BasePart") then
++		return instance.CFrame, instance.Size
+ 	end
+-	return nil
++	return nil, nil
++end
++
++-- Centre of the station's top surface: X/Z of the bounding-box centre, Y = top of the box.
++local function getTopCenter(instance: Instance): Vector3?
++	local cf, size = getBounds(instance)
++	if cf == nil or size == nil then
++		return nil
++	end
++	return Vector3.new(cf.Position.X, cf.Position.Y + size.Y / 2, cf.Position.Z)
++end
++
++-- Puts the model's bounding-box centre above `surface` so its bottom rests on the surface, centred in X/Z.
++-- Uses the bounding box (not the pivot), so an off-centre pivot in the chicken model does not matter.
++local function placeOnSurface(model: Model, surface: Vector3, extraOffset: Vector3)
++	local cf, size = model:GetBoundingBox()
++	local desiredCenter = Vector3.new(surface.X, surface.Y + size.Y / 2, surface.Z) + extraOffset
++	model:PivotTo(model:GetPivot() + (desiredCenter - cf.Position))
+ end
+ 
+ -- Props are static decoration: anchor them so they never fall or push the player.
+@@ -276,6 +296,7 @@ function CookingService.Start(
+ 					boxes = {},
+ 					currentBox = nil,
+ 					currentChicken = nil,
++					geprekSurface = nil,
+ 				}
+ 				sessions[player.UserId] = session
+ 				sessionByOrder[summary.orderId] = player.UserId
+@@ -339,9 +360,11 @@ function CookingService.Start(
+ 		local chicken = s.chickenTemplate:Clone()
+ 		chicken.Name = "ChickenClone"
+ 		freezeProp(chicken)
+-		local anchorCFrame = getPivotCFrame(s.geprekAnchor)
+-		if anchorCFrame then
+-			chicken:PivotTo(CFrame.new(anchorCFrame.Position + cfg.GeprekChickenOffset))
++		-- Measure the station BEFORE the clone is parented into it (a parented clone would change the bounds).
++		local surface = getTopCenter(s.geprekAnchor)
++		session.geprekSurface = surface
++		if surface then
++			placeOnSurface(chicken, surface, cfg.GeprekChickenOffset)
+ 		end
+ 		chicken.Parent = if s.geprekAnchor:IsA("Model") then s.geprekAnchor else workspace
+ 		session.currentChicken = chicken
+@@ -363,6 +386,11 @@ function CookingService.Start(
+ 			pcall(function()
+ 				chicken:ScaleTo(cfg.SmashScale)
+ 			end)
++			-- Scaling happens around the pivot; put the smashed chicken back on the surface, still centred.
++			local surface = session.geprekSurface
++			if surface then
++				placeOnSurface(chicken, surface, cfg.GeprekChickenOffset)
++			end
+ 		end
+ 		chicken:SetAttribute("Smashed", true)
+ 		session.stage = "NeedSambal"

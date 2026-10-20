@@ -9,6 +9,9 @@ export type PortionStage = "NeedBox" | "NeedChicken" | "NeedSmash" | "NeedSambal
 export type CookingConfig = {
 	-- Workspace objects (names are the ones the map already uses). Resolved once at start.
 	StationRootPath: { string }, -- Workspace folder searched FIRST for the objects below (falls back to all of Workspace)
+	-- Optional EXACT paths from Workspace (checked before the name search). Use when a name is ambiguous.
+	ChickenPath: { string }?,
+	GeprekPath: { string }?,
 	FoodBoxName: string, -- Workspace part holding the FoodBox ProximityPrompt
 	ChickenName: string, -- Workspace part holding the Chicken ProximityPrompt
 	GeprekName: string, -- Workspace model/part (geprek station) holding the Geprek ProximityPrompt
