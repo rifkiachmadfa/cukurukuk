@@ -31,8 +31,8 @@ local config: CookingTypes.CookingConfig = {
 	TrayPortionSpacing = Vector3.new(2.5, 0, 0),
 	TrayPlacementOffset = Vector3.new(0, 0.5, 0),
 	ChickenOnBoxOffset = Vector3.new(0, 0, 0),
-	GeprekChickenOffset = Vector3.new(0,5, -0,2, -0.7),
-	SmashScale = 0
+	GeprekChickenOffset = Vector3.new(0.5, -0.2, -0.7),
+	SmashScale = 1, -- 1 = tanpa perubahan skala (0 tidak valid untuk ScaleTo)
 
 	StepCooldownSeconds = 0.3,
 	DistanceSlack = 6,
